@@ -1,0 +1,25 @@
+MEU CONTROLE - pacote para publicar
+
+Esta pasta e o app completo. Nao precisa instalar nada nem ter servidor.
+Basta colocar a pasta inteira em qualquer hospedagem de sites estaticos.
+
+OPCAO A - Netlify (a mais rapida, gratis)
+1. Acesse app.netlify.com/drop e arraste esta pasta inteira.
+2. Em "Site configuration > Change site name", escolha um nome, por exemplo
+   meucontrole  ->  https://meucontrole.netlify.app
+
+OPCAO B - GitHub Pages (gratis)
+1. Crie um repositorio e envie o conteudo desta pasta.
+2. Em Settings > Pages, escolha a branch principal e salve.
+   O link sera https://SEU-USUARIO.github.io/NOME-DO-REPOSITORIO/
+
+OPCAO C - Cloudflare Pages ou Vercel (tambem gratis): suba a pasta do mesmo jeito.
+
+DEPOIS DE PUBLICAR
+- Abra o link no celular: no Android aparece "Instalar app" em Ajustes; no iPhone,
+  Safari > Compartilhar > Adicionar a Tela de Inicio.
+- Os dados de cada pessoa ficam cifrados no proprio aparelho. O app nao envia nada para servidor.
+- Para receber feedback, edite index.html e preencha FEEDBACK_EMAIL ou FEEDBACK_WHATSAPP
+  (no inicio do script). Sem isso, a pessoa so consegue copiar a mensagem.
+- Para publicar uma nova versao, troque os arquivos na hospedagem e aumente o numero
+  em CACHE ('meu-controle-v1' para v2) no arquivo sw.js.

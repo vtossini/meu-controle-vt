@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="512" height="512">
+  <title>Logo VT</title>
+  <circle cx="60" cy="60" r="60" fill="#006437"/>
+  <g transform="translate(60 60) scale(0.9) translate(-53 -63)" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M 24 40 C 26 70 38 86 53 86 C 68 86 80 70 82 40" stroke="#FFFFFF" stroke-width="10"/>
+    <path d="M 40 48 C 44 40 49 40 53 48 C 57 56 62 56 66 48" stroke="#BFE3CE" stroke-width="9"/>
+  </g>
+</svg>
