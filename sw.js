@@ -1,5 +1,5 @@
 /* Guarda o app no aparelho para abrir sem internet. Nenhum dado financeiro passa por aqui. */
-const CACHE = 'meu-controle-v3';
+const CACHE = 'meu-controle-v4';
 const ASSETS = ['./', 'index.html', 'manifest.webmanifest', 'icon.svg', 'icon-180.png', 'icon-192.png', 'icon-512.png',
   'fonts/carlito-latin-400-normal.woff2', 'fonts/carlito-latin-700-normal.woff2',
   'vendor/exceljs.min.js', 'vendor/pdf.min.js', 'vendor/pdf.worker.min.js'];

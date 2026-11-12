@@ -283,10 +283,12 @@ const catOf=id=>S.cats.find(c=>c.id===id)||{name:'Sem categoria',color:'#9AA6A0'
 const enc=new TextEncoder(),dec=new TextDecoder();
 const toB64=buf=>{const b=new Uint8Array(buf);let s='';for(let i=0;i<b.length;i+=0x8000)s+=String.fromCharCode.apply(null,b.subarray(i,i+0x8000));return btoa(s);};
 const fromB64=s=>Uint8Array.from(atob(s),c=>c.charCodeAt(0));
-async function deriveKey(pw,salt){
-  const km=await crypto.subtle.importKey('raw',enc.encode(pw),'PBKDF2',false,['deriveKey']);
-  return crypto.subtle.deriveKey({name:'PBKDF2',salt,iterations:310000,hash:'SHA-256'},km,{name:'AES-GCM',length:256},false,['encrypt','decrypt']);
+async function deriveRaw(pw,salt){
+  const km=await crypto.subtle.importKey('raw',enc.encode(pw),'PBKDF2',false,['deriveBits']);
+  return crypto.subtle.deriveBits({name:'PBKDF2',salt,iterations:310000,hash:'SHA-256'},km,256);
 }
+const aesFromRaw=raw=>crypto.subtle.importKey('raw',raw,'AES-GCM',false,['encrypt','decrypt']);
+async function deriveKey(pw,salt){return aesFromRaw(await deriveRaw(pw,salt));}
 async function encryptState(){
   const iv=crypto.getRandomValues(new Uint8Array(12));
   const ct=await crypto.subtle.encrypt({name:'AES-GCM',iv},KEY,enc.encode(JSON.stringify(S)));
@@ -303,6 +305,69 @@ function persist(){
   },250);
 }
 async function flushSave(){clearTimeout(saveTimer);if(DEMO||!KEY)return;try{localStorage.setItem(VKEY,await encryptState());}catch(e){}}
+
+
+/* ============ entrada com biometria (passkey + extensao PRF, tudo no aparelho) ============ */
+const BIOKEY='vt.bio.v1';
+function bioMeta(){try{return JSON.parse(localStorage.getItem(BIOKEY)||'null');}catch(e){return null;}}
+const bioSupported=()=>STANDALONE&&!!window.PublicKeyCredential&&!!navigator.credentials&&window.isSecureContext;
+const rnd=n=>crypto.getRandomValues(new Uint8Array(n));
+async function prfKey(secret){
+  const hk=await crypto.subtle.importKey('raw',secret,'HKDF',false,['deriveKey']);
+  return crypto.subtle.deriveKey({name:'HKDF',hash:'SHA-256',salt:new Uint8Array(32),info:enc.encode('meu-controle-bio-v1')},hk,{name:'AES-GCM',length:256},false,['encrypt','decrypt']);
+}
+function bioCard(){
+  const on=!!bioMeta(),ok=bioSupported();
+  return `<section class="card"><h2>Entrada com biometria</h2>
+    <p class="note">${on?'Ativada neste aparelho. Na tela de entrada aparece o botão Entrar com biometria. A senha continua valendo.':
+      (ok?'Entre com o desbloqueio do próprio aparelho (rosto, digital ou PIN), sem digitar a senha. O app nunca recebe a sua imagem nem a sua digital: quem faz a verificação é o sistema do aparelho.':
+      'Este aparelho ou navegador não oferece o recurso necessário. Você continua entrando com a senha.')}</p>
+    ${ok?`<div class="actions">${on?'<button class="btn danger" data-act="bio-off">Desativar</button>':'<button class="btn" data-act="bio-on">Ativar biometria</button>'}</div>`:''}</section>`;
+}
+function bioForm(){
+  openSheet(`<h2>Ativar biometria</h2>
+  <form id="bf"><p class="note" style="margin-bottom:12px">Confirme sua senha. Em seguida o aparelho pedirá o rosto, a digital ou o PIN para criar a chave de acesso.</p>
+  <div class="field"><label for="bpw">Senha</label><input class="inp" id="bpw" type="password" autocomplete="current-password" required></div>
+  <p class="err" id="berr" role="alert"></p>
+  <div class="actions"><button class="btn primary">Continuar</button><button type="button" class="btn" id="bno">Cancelar</button></div></form>`,ov=>{
+    $('#bno',ov).onclick=closeSheet;
+    $('#bf',ov).addEventListener('submit',async ev=>{
+      ev.preventDefault();const err=$('#berr',ov),btn=ev.submitter||$('button.primary',ov);btn.disabled=true;err.textContent='';
+      try{await enableBio($('#bpw',ov).value);closeSheet();render();toast('Biometria ativada');}
+      catch(e){
+        err.textContent=e&&e.message==='senha'?'Senha incorreta.':(e&&e.message==='noprf'?'Este aparelho não oferece o recurso necessário.':(e&&e.name==='NotAllowedError'?'Verificação cancelada.':'Não foi possível ativar a biometria neste aparelho.'));
+        btn.disabled=false;
+      }
+    });
+  });
+}
+async function enableBio(pw){
+  const v=JSON.parse(readVault()||'null');if(!v)throw new Error('vault');
+  const salt=fromB64(v.salt);const raw=await deriveRaw(pw,salt);
+  try{await crypto.subtle.decrypt({name:'AES-GCM',iv:fromB64(v.iv)},await aesFromRaw(raw),fromB64(v.data));}catch(e){throw new Error('senha');}
+  const prfSalt=rnd(32);
+  const cred=await navigator.credentials.create({publicKey:{rp:{name:'Meu Controle',id:location.hostname},user:{id:rnd(16),name:'meu-controle',displayName:'Meu Controle'},
+    challenge:rnd(32),pubKeyCredParams:[{type:'public-key',alg:-7},{type:'public-key',alg:-257}],
+    authenticatorSelection:{authenticatorAttachment:'platform',residentKey:'preferred',userVerification:'required'},timeout:60000,extensions:{prf:{eval:{first:prfSalt}}}}});
+  let secret=cred.getClientExtensionResults().prf?.results?.first;
+  if(!secret){
+    const a=await navigator.credentials.get({publicKey:{challenge:rnd(32),rpId:location.hostname,allowCredentials:[{type:'public-key',id:cred.rawId}],userVerification:'required',extensions:{prf:{eval:{first:prfSalt}}}}});
+    secret=a.getClientExtensionResults().prf?.results?.first;
+  }
+  if(!secret)throw new Error('noprf');
+  const iv=rnd(12);const wrap=await crypto.subtle.encrypt({name:'AES-GCM',iv},await prfKey(secret),raw);
+  localStorage.setItem(BIOKEY,JSON.stringify({v:1,id:toB64(cred.rawId),salt:toB64(prfSalt),iv:toB64(iv),wrap:toB64(wrap)}));
+}
+async function unlockBio(){
+  const m=bioMeta(),v=JSON.parse(readVault()||'null');if(!m||!v)throw new Error('sem biometria');
+  const a=await navigator.credentials.get({publicKey:{challenge:rnd(32),rpId:location.hostname,allowCredentials:[{type:'public-key',id:fromB64(m.id)}],userVerification:'required',extensions:{prf:{eval:{first:fromB64(m.salt)}}}}});
+  const secret=a.getClientExtensionResults().prf?.results?.first;if(!secret)throw new Error('noprf');
+  const raw=await crypto.subtle.decrypt({name:'AES-GCM',iv:fromB64(m.iv)},await prfKey(secret),fromB64(m.wrap));
+  SALT=fromB64(v.salt);KEY=await aesFromRaw(raw);
+  try{const pt=await crypto.subtle.decrypt({name:'AES-GCM',iv:fromB64(v.iv)},KEY,fromB64(v.data));S=JSON.parse(dec.decode(pt));}
+  catch(e){KEY=null;SALT=null;try{localStorage.removeItem(BIOKEY);}catch(_){}throw new Error('stale');}
+  enterApp();
+}
 
 /* ============ bloqueio ============ */
 function resetLockTimer(){
@@ -330,6 +395,7 @@ function renderLock(msg=''){
       <p class="err" id="lockerr" role="alert">${esc(msg)}</p>
       <button class="btn primary block" id="lockgo">${hasVault?'Entrar':'Criar cofre'}</button>
     </form>
+    ${hasVault&&STANDALONE&&bioMeta()?'<button class="btn block" id="biobtn" type="button">Entrar com biometria</button>':''}
     <div class="lock-links">
       <button class="btn ghost" id="demo">Ver com dados de exemplo</button>
       <label class="btn ghost" for="restore" style="cursor:pointer">Restaurar backup</label>
@@ -359,9 +425,14 @@ function renderLock(msg=''){
     }catch(e){err.textContent='Não foi possível abrir o cofre neste navegador.';btn.disabled=false;btn.textContent=hasVault?'Entrar':'Criar cofre';}
   });
   $('#demo').addEventListener('click',()=>{DEMO=true;S=demoState();enterApp();});
+  const bb=$('#biobtn');if(bb)bb.addEventListener('click',async()=>{
+    $('#lockerr').textContent='';bb.disabled=true;
+    try{await unlockBio();}
+    catch(e){$('#lockerr').textContent=(e&&e.name==='NotAllowedError')?'Biometria cancelada. Você pode entrar com a senha.':'Não foi possível usar a biometria agora. Entre com a senha.';bb.disabled=false;}
+  });
   $('#restore').addEventListener('change',async ev=>{
     const f=ev.target.files[0];if(!f)return;
-    try{const t=await f.text();const v=JSON.parse(t);if(!v.salt||!v.iv||!v.data)throw 0;localStorage.setItem(VKEY,t);renderLock('Backup restaurado. Entre com a senha usada nele.');}
+    try{const t=await f.text();const v=JSON.parse(t);if(!v.salt||!v.iv||!v.data)throw 0;localStorage.setItem(VKEY,t);localStorage.removeItem(BIOKEY);renderLock('Backup restaurado. Entre com a senha usada nele.');}
     catch(e){$('#lockerr').textContent='Arquivo de backup inválido.';}
   });
   setTimeout(()=>{const p=$('#pw');if(p)p.focus();},50);
@@ -470,6 +541,7 @@ function viewSet(){
   ${STANDALONE?`<section class="card"><h2>Instalar no celular</h2>
     <p class="note">Android (Chrome): toque em Instalar abaixo, ou no menu ⋮ e em Adicionar à tela inicial. iPhone (Safari): toque em Compartilhar e depois em Adicionar à Tela de Início. Depois disso o app abre como qualquer outro e funciona sem internet.</p>
     <div class="actions"><button class="btn" data-act="install" id="installbtn" hidden>Instalar app</button></div></section>`:''}
+  ${STANDALONE?bioCard():''}
   <section class="card"><h2>Sua opinião</h2>
     <p class="note">Conte o que está funcionando e o que atrapalha. Só vai a nota e o texto que você escrever.</p>
     <div class="actions"><button class="btn" data-act="feedback">Enviar feedback</button></div></section>
@@ -1200,6 +1272,8 @@ document.addEventListener('click',ev=>{
   else if(a==='new-entry')entryForm();
   else if(a==='new-income')incomeForm();
   else if(a==='feedback')feedbackForm();
+  else if(a==='bio-on')bioForm();
+  else if(a==='bio-off'){try{localStorage.removeItem(BIOKEY);}catch(e){}toast('Biometria desativada');render();}
   else if(a==='import-invest'){const f=$('#invfile');if(f)f.click();}
   else if(a==='install'&&window.__dip){window.__dip.prompt();window.__dip=null;t.hidden=true;}
   else if(a==='fb-refresh')adminFeedback();
@@ -1210,7 +1284,7 @@ document.addEventListener('click',ev=>{
   else if(a==='lock')lock('');
   else if(a==='wipe'){
     if(!t.classList.contains('armed')){t.classList.add('armed');t.textContent='Confirmar: apagar tudo';return;}
-    try{localStorage.removeItem(VKEY);}catch(e){}
+    try{localStorage.removeItem(VKEY);localStorage.removeItem(BIOKEY);}catch(e){}
     clearTimeout(saveTimer);S=null;KEY=null;DEMO=false;renderLock('Cofre apagado.');
   }
   else if(t.dataset.filter){filter=t.dataset.filter;render();}
