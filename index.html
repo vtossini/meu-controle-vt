@@ -446,8 +446,9 @@ function viewIn(){
   <div class="sec"><h2>Entradas de ${esc(mLong(cur))}</h2><button class="btn primary" data-act="new-income">+ Entrada</button></div>
   ${inn.length?`<div class="list">${inn.map(x=>`<button class="item" data-edit-in="${x.e.id}"><i class="dot" style="background:var(--pos);margin:0"></i><span class="d"><b>${esc(x.e.desc)}</b><small>${x.e.kind==='salario'?'Salário':'Outra entrada'}${x.e.rec?' · todo mês':' · '+fmtDate(x.e.date)}</small></span><span class="a pos num">${brl(x.amt)}</span></button>`).join('')}</div>`
   :`<div class="list"><div class="empty">Nenhuma entrada neste mês. Registre seu salário para o saldo fazer sentido.</div></div>`}
-  <div class="sec" style="margin-top:8px"><h2>Aplicações</h2><button class="btn primary" data-act="new-invest">+ Saldo</button></div>
-  <p class="note">Registre o saldo de cada aplicação quando quiser. O Início mostra o último valor de cada uma.</p>
+  <div class="sec" style="margin-top:8px"><h2>Aplicações</h2><span style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" data-act="import-invest">Importar arquivo</button><button class="btn primary" data-act="new-invest">+ Saldo</button></span></div>
+  <input id="invfile" type="file" accept=".csv,.txt,.xlsx,.pdf" hidden>
+  <p class="note">Digite o saldo ou importe uma planilha (CSV, Excel ou PDF) com a posição das suas aplicações. O Início mostra o último valor de cada uma.</p>
   ${hist.length?`<div class="list">${hist.map(v=>`<button class="item" data-edit-inv="${v.id}"><i class="dot" style="background:var(--accent);margin:0"></i><span class="d"><b>${esc(v.inst)}</b><small>${fmtDate(v.date)}${v.note?' · '+esc(v.note):''}</small></span><span class="a num">${brl(v.balance)}</span></button>`).join('')}</div>`
   :`<div class="list"><div class="empty">Nenhum saldo registrado.</div></div>`}`;
 }
@@ -719,7 +720,7 @@ function loadPdfJs(){
     sc.onerror=()=>no(new Error('pdfjs'));document.head.appendChild(sc);
   });
 }
-async function parsePDF(file){
+async function pdfLines(file){
   await loadPdfJs();
   const doc=await pdfjsLib.getDocument({data:await file.arrayBuffer()}).promise;
   const lines=[];
@@ -733,6 +734,10 @@ async function parsePDF(file){
     });
     [...map.entries()].sort((a,b)=>b[0]-a[0]).forEach(([,items])=>lines.push(items.sort((a,b)=>a.x-b.x).map(i=>i.s).join(' ').replace(/\s+/g,' ').trim()));
   }
+  return lines;
+}
+async function parsePDF(file){
+  const lines=await pdfLines(file);
   const re=/^(\d{1,2}[\/.]\d{1,2}(?:[\/.]\d{2,4})?|\d{1,2}\s+(?:jan|fev|mar|abr|mai|jun|jul|ago|set|out|nov|dez)[a-z]*\.?(?:\s+\d{4})?)\s+(.+?)\s+(?:R\$\s*)?(-?\s?\d{1,3}(?:\.\d{3})*,\d{2}\s*(?:-|CR|C|D|DB)?)$/i;
   const out=[];
   for(const ln of lines){
@@ -936,6 +941,139 @@ async function adminFeedback(){
   }catch(e){const b=$('#fbbody');if(b)b.innerHTML='<p class="note">Não consegui carregar o feedback agora.</p>';}
 }
 
+
+/* ============ importacao de aplicacoes (posicao de investimentos) ============ */
+let INV=null;
+const colLabel=(h,j)=>{const t=String(h&&h[j]!=null?h[j]:'').trim();return t||('Coluna '+(j+1));};
+async function fileToRows(file){
+  const nm=file.name.toLowerCase();
+  if(/\.xlsx$/.test(nm)){
+    const wb=new ExcelJS.Workbook();await wb.xlsx.load(await file.arrayBuffer());
+    const ws=wb.worksheets[0];const rows=[];
+    ws.eachRow({includeEmpty:false},r=>{rows.push(r.values.slice(1).map(c=>c&&typeof c==='object'&&!(c instanceof Date)?(c.result??c.text??''):c));});
+    return rows;
+  }
+  if(/\.pdf$/.test(nm)){
+    const lines=await withTimeout(pdfLines(file),40000);const out=[['Aplicação','Valor']];
+    for(const ln of lines){
+      const all=[...ln.matchAll(/(?:R\$\s*)?(\d{1,3}(?:\.\d{3})*,\d{2})(?!\d)/g)];
+      if(!all.length)continue;
+      const name=ln.slice(0,all[0].index).replace(/R\$\s*$/,'').trim();
+      if(name.length<3||/^total/i.test(NORM(name)))continue;
+      out.push([name,all[all.length-1][1]]);
+    }
+    return out;
+  }
+  return parseCSV(await readText(file));
+}
+function guessInvCols(rows){
+  const rs=rows.map(r=>r||[]);let h=-1;
+  for(let i=0;i<Math.min(rs.length,30);i++){
+    const cells=rs[i].filter(c=>String(c??'').trim()!=='');
+    const texty=cells.filter(c=>typeof c==='string'&&isNaN(parseAmount(c))&&!parseDate(c)).length;
+    const next=rs.slice(i+1,i+4).some(r=>r.some(c=>isFinite(parseAmount(c))&&/\d/.test(String(c))));
+    if(texty>=2&&next){h=i;break;}
+  }
+  const head=h>=0?rs[h]:[];const n=Math.max(0,...rs.slice(0,40).map(r=>r.length));
+  const nh=Array.from({length:n},(_,j)=>NORM(head[j]));
+  const find=(...res)=>{for(const re of res){const j=nh.findIndex(x=>re.test(x));if(j>=0)return j;}return -1;};
+  let name=find(/^(produto|ativo|aplicacao|investimento|titulo|papel|nome|descricao)/,/(produto|ativo|aplicac|investimento|titulo|nome|descri|ticker|codigo)/);
+  let val=find(/valor liquido/,/saldo liquido/,/saldo (atual|total|bruto)/,/valor (atual|bruto|total)/,/^saldo/,/posicao/,/^valor/,/(saldo|valor)/);
+  const date=find(/^(data|posicao em|competencia|referencia)/,/data/);
+  const inst=find(/(instituicao|corretora|banco|custodiante|emissor)/);
+  if(name<0)name=Array.from({length:n},(_,j)=>j).find(j=>j!==val&&j!==date)??0;
+  if(val<0){// coluna com mais numeros
+    let best=-1,bc=0;for(let j=0;j<n;j++){if(j===name||j===date)continue;const c=rs.slice(h+1,h+30).filter(r=>isFinite(parseAmount(r[j]))&&/\d/.test(String(r[j]??''))).length;if(c>bc){bc=c;best=j;}}val=best;
+  }
+  return {h,head,n,cols:{name,val,date,inst}};
+}
+async function startInvImport(file){
+  toast('Lendo arquivo…');
+  try{
+    const rows=(await fileToRows(file)).filter(r=>r&&r.some(c=>String(c??'').trim()!==''));
+    if(!rows.length){toast('Não encontrei dados neste arquivo.');return;}
+    const g=guessInvCols(rows);
+    let pre=todayStr();
+    for(const r of rows.slice(0,Math.max(g.h,0)+1)){for(const c of r){const m=String(c??'').match(/\d{2}[\/.]\d{2}[\/.]\d{4}/);if(m&&parseDate(m[0])){pre=parseDate(m[0]);break;}}}
+    INV={name:file.name,rows,g,cols:g.cols,date:pre,pdf:/\.pdf$/i.test(file.name),list:[]};
+    buildInvList();openInvImport();
+  }catch(e){toast(/\.pdf$/i.test(file.name)?'Não consegui ler este PDF. Tente CSV ou Excel.':'Não consegui ler este arquivo.');}
+}
+function buildInvList(){
+  const {rows,g,cols}=INV;INV.list=[];
+  const known={};S.invests.forEach(v=>{known[NORM(v.inst)]=v.inst;});
+  const isDup=(n,d)=>S.invests.some(v=>NORM(v.inst)===NORM(n)&&v.date===d);
+  if(cols.name<0||cols.val<0)return;
+  rows.slice(g.h+1).forEach((r,i)=>{
+    let nm=String(r[cols.name]??'').trim();const bal=parseAmount(r[cols.val]);
+    if(!nm||!isFinite(bal)||bal<0||/^total/.test(NORM(nm)))return;
+    const inst=cols.inst>=0?String(r[cols.inst]??'').trim():'';
+    const d=(cols.date>=0&&parseDate(r[cols.date]))||INV.date;
+    nm=known[NORM(nm)]||nm;
+    INV.list.push({i,name:nm,balance:Math.round(bal*100)/100,date:d,note:inst,dup:isDup(nm,d),sel:true});
+  });
+}
+function openInvImport(){
+  const {g}=INV;
+  const sample=j=>{const r=INV.rows.slice(g.h+1).find(r=>String(r[j]??'').trim()!=='');return r?String(r[j]).trim().slice(0,22):'';};
+  const opts=(sel,optional)=>(optional?`<option value="-1" ${sel<0?'selected':''}>Não tem</option>`:'')+Array.from({length:g.n},(_,j)=>`<option value="${j}" ${sel===j?'selected':''}>${esc(colLabel(g.head,j))}${sample(j)?' (ex.: '+esc(sample(j))+')':''}</option>`).join('');
+  openSheet(`
+  <h2>Importar aplicações</h2>
+  <p class="note" style="margin-bottom:12px"><b>${esc(INV.name)}</b>${INV.pdf?'. Em PDF a leitura é aproximada, confira os valores.':'. Indique em qual coluna está cada informação.'}</p>
+  <div class="two">
+    <div class="field"><label for="icn">Coluna do nome da aplicação</label><select class="inp" id="icn">${opts(INV.cols.name,false)}</select></div>
+    <div class="field"><label for="icv">Coluna do saldo</label><select class="inp" id="icv">${opts(INV.cols.val,false)}</select></div>
+    <div class="field"><label for="icd">Coluna da data (opcional)</label><select class="inp" id="icd">${opts(INV.cols.date,true)}</select></div>
+    <div class="field"><label for="ici">Coluna da instituição (opcional)</label><select class="inp" id="ici">${opts(INV.cols.inst,true)}</select></div>
+  </div>
+  <div class="field"><label for="icdate">Data do saldo (usada quando o arquivo não tem data)</label><input class="inp in" id="icdate" type="date" value="${INV.date}" style="max-width:220px"></div>
+  <div class="bulk"><button class="btn" id="vall" type="button">Marcar todos</button><button class="btn" id="vnone" type="button">Desmarcar</button></div>
+  <div class="implist" id="invlist"></div>
+  <p class="note" id="invnote" style="margin-bottom:12px"></p>
+  <div class="actions"><button class="btn primary" id="invgo" type="button">Importar</button><button class="btn" id="invcancel" type="button">Cancelar</button></div>`,ov=>{
+    paintInv();
+    $('#invcancel',ov).onclick=closeSheet;$('#invgo',ov).onclick=confirmInv;
+    ov.addEventListener('change',ev=>{
+      const t=ev.target;
+      if(['icn','icv','icd','ici'].includes(t.id)){INV.cols={name:+$('#icn',ov).value,val:+$('#icv',ov).value,date:+$('#icd',ov).value,inst:+$('#ici',ov).value};}
+      else if(t.id==='icdate'){INV.date=t.value||todayStr();}
+      else if(t.dataset.vsel!==undefined){INV.list[+t.closest('.irow').dataset.i].sel=t.checked;t.closest('.irow').classList.toggle('off',!t.checked);paintInvCount();return;}
+      else return;
+      buildInvList();paintInv();
+    });
+    $('#vall',ov).onclick=()=>{INV.list.forEach(x=>x.sel=true);paintInv();};
+    $('#vnone',ov).onclick=()=>{INV.list.forEach(x=>x.sel=false);paintInv();};
+  },true);
+}
+function paintInvCount(){
+  const n=INV.list.filter(x=>x.sel).length;const b=$('#invgo');
+  if(b){b.textContent=n?`Importar ${n} ${n===1?'aplicação':'aplicações'}`:'Nada marcado';b.disabled=!n;}
+  const nt=$('#invnote');
+  if(nt){const d=INV.list.filter(x=>x.dup).length;
+    nt.textContent=(INV.list.length?'':'Nenhuma linha reconhecida. Confira as colunas escolhidas.')+(d?` ${d} já ${d>1?'existem':'existe'} na mesma data e será${d>1?'ão':''} atualizada${d>1?'s':''}.`:'');}
+}
+function paintInv(){
+  const box=$('#invlist');if(!box)return;
+  box.innerHTML=INV.list.length?INV.list.map((x,i)=>`
+  <div class="irow${x.sel?'':' off'}" data-i="${i}">
+    <label class="ick"><input type="checkbox" data-vsel ${x.sel?'checked':''} aria-label="Importar ${esc(x.name)}"></label>
+    <div class="id"><b>${esc(x.name)}</b><small>${fmtDate(x.date)}${x.note?' · '+esc(x.note):''}${x.dup?' · atualiza o saldo existente':''}</small></div>
+    <div class="ia num">${brl(x.balance)}</div>
+  </div>`).join(''):'<div class="empty">Nada reconhecido com essas colunas.</div>';
+  paintInvCount();
+}
+function confirmInv(){
+  let n=0;
+  for(const x of INV.list){
+    if(!x.sel)continue;
+    const ex=S.invests.find(v=>NORM(v.inst)===NORM(x.name)&&v.date===x.date);
+    if(ex){ex.balance=x.balance;if(x.note)ex.note=x.note;}
+    else S.invests.push({id:uid(),inst:x.name,date:x.date,balance:x.balance,note:x.note||''});
+    n++;
+  }
+  persist();closeSheet();tab='in';render();toast(`${n} ${n===1?'aplicação importada':'aplicações importadas'}`);
+}
+
 /* ============ exportacao ============ */
 async function logoPng(){
   const svg=logo('#FFFFFF','#006437','#17231D',192).replace('<svg ','<svg xmlns="http://www.w3.org/2000/svg" ');
@@ -1062,6 +1200,7 @@ document.addEventListener('click',ev=>{
   else if(a==='new-entry')entryForm();
   else if(a==='new-income')incomeForm();
   else if(a==='feedback')feedbackForm();
+  else if(a==='import-invest'){const f=$('#invfile');if(f)f.click();}
   else if(a==='install'&&window.__dip){window.__dip.prompt();window.__dip=null;t.hidden=true;}
   else if(a==='fb-refresh')adminFeedback();
   else if(a==='import'){const f=$('#impfile');if(f)f.click();}
@@ -1087,6 +1226,7 @@ document.addEventListener('click',ev=>{
 });
 document.addEventListener('change',ev=>{
   if(!S)return;
+  if(ev.target.id==='invfile'){const f=ev.target.files[0];ev.target.value='';if(f)startInvImport(f);return;}
   if(ev.target.id==='impfile'){const f=ev.target.files[0];ev.target.value='';if(f)startImport(f);return;}
   if(ev.target.id==='cut'){const v=Math.min(31,Math.max(1,parseInt(ev.target.value)||25));S.cut=v;ev.target.value=v;persist();toast('Fechamento atualizado');}
 });
